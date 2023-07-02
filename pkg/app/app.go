@@ -2,7 +2,6 @@ package app
 
 import (
 	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
 	"os"
@@ -14,58 +13,62 @@ import (
 
 var log zap.SugaredLogger
 
+// Define flags
+var dirPath, outPath = Flags()
+
 func Run() error {
 	{
-		l, err := zap.NewProductionConfig().Build()
+		zaplogger, err := zap.NewProductionConfig().Build()
 		if err != nil {
 			return err
 		}
-		log = *l.Sugar()
+		log = *zaplogger.Sugar()
+		defer log.Sync()
 	}
-	defer log.Sync()
 
-	// Define flags
-	dirPtr := flag.String("path", ".", "the file directory")
-	outPtr := flag.String("out", "out.json", "the output file")
-	flag.Parse()
-	dirPath := *dirPtr
-	outPath := *outPtr
-	files, err := os.ReadDir(dirPath)
+	outPtr, err := os.Create(outPath)
 	if err != nil {
-		return fmt.Errorf("failed reading directory: %s", err)
+		return fmt.Errorf("failed create file: %w", err)
 	}
+	defer outPtr.Close()
+
+	feedfiles, err := os.ReadDir(dirPath)
+	if err != nil {
+		return fmt.Errorf("failed reading directory: %w", err)
+	}
+
 	var g gofeed.Feed
-	for _, v := range files {
-		if v.IsDir() {
+	for _, filename := range feedfiles {
+		if filename.IsDir() {
 			continue
 		}
-		filePath := path.Join(dirPath, v.Name())
-		filePtr, err := os.Open(filePath)
+
+		file, err := os.Open(path.Join(dirPath, filename.Name()))
 		if err != nil {
-			return fmt.Errorf("failed reading file: %s", err)
+			return fmt.Errorf("failed reading file: %w", err)
 		}
-		defer filePtr.Close()
-		feed, err := gofeed.NewParser().Parse(filePtr)
-		if errors.Is(err, gofeed.ErrFeedTypeNotDetected) {
-			log.Errorf("failed parsing feed %s", filePath)
+		defer file.Close()
+
+		feed, err := gofeed.NewParser().Parse(file)
+		if err != nil {
+			log.Errorf("failed parsing file: %w", err)
 			continue
 		}
-		if err != nil {
-			return fmt.Errorf("failed parsing feed %s: %s", filePath, err)
-		}
-		log.Debugw("read file", "items", feed.Items)
+
 		g.Items = append(g.Items, feed.Items...)
 	}
 
-	filePtr, err := os.Create(outPath)
-	defer filePtr.Close()
-	if err != nil {
-		return fmt.Errorf("failed reading out: %s", err)
-	}
-	enc := json.NewEncoder(filePtr)
+	enc := json.NewEncoder(outPtr)
 	if err := enc.Encode(g); err != nil {
-		return fmt.Errorf("failed writing out: %s", err)
+		return fmt.Errorf("failed encoding: %w", err)
 	}
 
 	return nil
+}
+
+func Flags() (dir, out string) {
+	dirPtr := flag.String("path", ".", "the file directory")
+	outPtr := flag.String("out", "out.json", "the output file")
+	flag.Parse()
+	return *dirPtr, *outPtr
 }
